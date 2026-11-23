@@ -29,15 +29,15 @@ backend/.venv/bin/python backend/db/seed_demo.py
 
 ### 3. Сервер API + SSE
 ```bash
-backend/.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+backend/.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8085
 ```
-Проверка: `curl http://127.0.0.1:8000/health`
+Проверка: `curl http://127.0.0.1:8085/health`
 
 ### 4. Flutter-приложение
 Укажите адрес сервера на экране входа (значок сервера в правом верхнем углу):
-- Web / Windows (локально): `http://localhost:8000`
-- Android-эмулятор: `http://10.0.2.2:8000`
-- Реальное устройство: `http://<IP-вашего-ПК>:8000`
+- Web / Windows (локально): `http://localhost:8085`
+- Android-эмулятор: `http://10.0.2.2:8085`
+- Реальное устройство: `http://<IP-вашего-ПК>:8085`
 
 ```bash
 cd app
