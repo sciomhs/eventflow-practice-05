@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:uuid/uuid.dart';
+import '../../core/api_client.dart';
 import '../../core/auth_store.dart';
+import '../../core/date_fmt.dart';
 import '../../core/models/models.dart';
+import '../../core/sse_client.dart';
 import '../../design/tokens.dart';
 import '../../design/widgets/ef_widgets.dart';
 
@@ -20,10 +22,13 @@ class ControllerScannerScreen extends StatefulWidget {
 
 class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
   final _codeCtrl = TextEditingController();
+  final _codeFocus = FocusNode();
+
   bool _loadingEvents = true;
   String? _eventsError;
   List<EventItem> _events = [];
   String? _selectedEventId;
+  bool _revokedLive = false;
 
   bool _cameraActive = false;
   bool _inFlight = false;
@@ -32,15 +37,35 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
   CheckInResult? _result;
   String? _fatalError;
 
+  StreamSubscription<SseMessage>? _sseSub;
+
   @override
   void initState() {
     super.initState();
     _loadEvents();
+    _sseSub = widget.auth.sse.messages.listen((msg) {
+      if (msg.event == 'controller.revoked') {
+        final eid = msg.data['event_id']?.toString();
+        final cid = msg.data['controller_id']?.toString();
+        if (cid == widget.auth.user?.id &&
+            (eid == null || eid == _selectedEventId)) {
+          if (mounted) {
+            setState(() {
+              _revokedLive = true;
+              _cameraActive = false;
+            });
+            _loadEvents();
+          }
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
+    _sseSub?.cancel();
     _codeCtrl.dispose();
+    _codeFocus.dispose();
     super.dispose();
   }
 
@@ -64,7 +89,13 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
       if (mounted) {
         setState(() {
           _events = list;
-          _selectedEventId ??= list.isNotEmpty ? list.first.id : null;
+          if (_selectedEventId == null ||
+              !list.any((e) => e.id == _selectedEventId)) {
+            _selectedEventId = list.isNotEmpty ? list.first.id : null;
+          }
+          if (list.any((e) => e.id == _selectedEventId)) {
+            _revokedLive = false;
+          }
           _loadingEvents = false;
         });
       }
@@ -80,9 +111,12 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
 
   Future<void> _submitCheckIn(String rawCode, {bool isRetry = false}) async {
     final code = rawCode.trim();
-    if (code.isEmpty || _selectedEventId == null || _inFlight) return;
-    if (!isRetry && _result != null)
+    if (code.isEmpty || _selectedEventId == null || _inFlight || _revokedLive) {
+      return;
+    }
+    if (!isRetry && _result != null) {
       return; // Require explicit "Следующий посетитель"
+    }
 
     _pendingQr = code;
     _pendingRequestId ??= const Uuid().v4();
@@ -107,12 +141,41 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
           _inFlight = false;
         });
       }
+    } on ApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _inFlight = false;
+          if (e.statusCode == 403) {
+            _revokedLive = true;
+            _result = CheckInResult(
+              status: 'FORBIDDEN',
+              idempotentReplay: false,
+              message:
+                  'Доступ контролёра отозван или не назначен на это событие (403).',
+            );
+          } else if (e.statusCode == 409) {
+            _pendingRequestId = null;
+            _result = CheckInResult(
+              status: 'CONFLICT',
+              idempotentReplay: false,
+              message: e.message,
+            );
+          } else {
+            _fatalError = e.message;
+            _result = CheckInResult(
+              status: 'UNCERTAIN',
+              idempotentReplay: false,
+              message: 'Ошибка сервера (${e.statusCode}): ${e.message}',
+            );
+          }
+        });
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
           _inFlight = false;
           _fatalError = e.toString();
-          _result = CheckInResult(
+          _result = const CheckInResult(
             status: 'UNCERTAIN',
             idempotentReplay: false,
             message:
@@ -131,11 +194,19 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
       _pendingQr = null;
       _codeCtrl.clear();
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _codeFocus.requestFocus();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loadingEvents) return const Center(child: CircularProgressIndicator());
+    if (_loadingEvents) {
+      return const Padding(
+        padding: EdgeInsets.all(EfSpacing.lg),
+        child: Column(children: [EfSkeletonCard(height: 180)]),
+      );
+    }
     if (_eventsError != null) {
       return Padding(
         padding: const EdgeInsets.all(EfSpacing.lg),
@@ -143,11 +214,15 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
       );
     }
     if (_events.isEmpty) {
-      return const EfEmptyState(
+      return EfEmptyState(
         icon: Icons.qr_code_scanner,
-        title: 'Нет назначенных событий',
+        title: _revokedLive
+            ? 'Назначение контролёра отозвано'
+            : 'Нет назначенных событий',
         subtitle:
             'Попросите организатора назначить ваш аккаунт на мероприятие.',
+        actionLabel: 'Обновить список',
+        onAction: _loadEvents,
       );
     }
 
@@ -161,16 +236,33 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
             children: [
               Text('Контроль входа', style: EfTextStyles.display(28)),
               const SizedBox(height: EfSpacing.md),
+              if (_revokedLive) ...[
+                EfErrorBanner(
+                  message:
+                      'Ваше назначение на это событие отозвано организатором. Новые проверки заблокированы.',
+                  onRetry: _loadEvents,
+                ),
+                const SizedBox(height: EfSpacing.md),
+              ],
               DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue: _selectedEventId,
                 decoration:
                     const InputDecoration(labelText: 'Назначенное мероприятие'),
                 items: _events
                     .map((e) => DropdownMenuItem(
-                        value: e.id, child: Text('${e.title} (${e.location})')))
+                          value: e.id,
+                          child: Text(
+                            '${e.title} (${e.location})',
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ))
                     .toList(),
                 onChanged: _result == null && !_inFlight
-                    ? (v) => setState(() => _selectedEventId = v)
+                    ? (v) => setState(() {
+                          _selectedEventId = v;
+                          _revokedLive = false;
+                        })
                     : null,
               ),
               const SizedBox(height: EfSpacing.lg),
@@ -178,9 +270,10 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
                 _ResultCard(
                   result: _result!,
                   fatalError: _fatalError,
-                  onRetrySameRequest: _pendingQr != null
-                      ? () => _submitCheckIn(_pendingQr!, isRetry: true)
-                      : null,
+                  onRetrySameRequest:
+                      _result!.status == 'UNCERTAIN' && _pendingQr != null
+                          ? () => _submitCheckIn(_pendingQr!, isRetry: true)
+                          : null,
                   onNext: _nextVisitor,
                 )
               else ...[
@@ -191,8 +284,24 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
                       child: SizedBox(
                         height: 280,
                         child: MobileScanner(
+                          errorBuilder: (context, error) {
+                            return Container(
+                              color: EfColors.warmStone,
+                              padding: const EdgeInsets.all(EfSpacing.lg),
+                              child: Center(
+                                child: Text(
+                                  'Камера недоступна или доступ запрещён (${error.errorCode.name}). Используйте ввод полного кода ниже.',
+                                  textAlign: TextAlign.center,
+                                  style: EfTextStyles.body(14,
+                                      weight: FontWeight.w600),
+                                ),
+                              ),
+                            );
+                          },
                           onDetect: (capture) {
-                            if (_inFlight || _result != null) return;
+                            if (_inFlight || _result != null || _revokedLive) {
+                              return;
+                            }
                             final raw = capture.barcodes.firstOrNull?.rawValue;
                             if (raw != null && raw.trim().isNotEmpty) {
                               _submitCheckIn(raw);
@@ -203,7 +312,9 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
                     )
                   else
                     OutlinedButton.icon(
-                      onPressed: () => setState(() => _cameraActive = true),
+                      onPressed: _revokedLive
+                          ? null
+                          : () => setState(() => _cameraActive = true),
                       icon: const Icon(Icons.qr_code_scanner_rounded),
                       label: const Text('Включить камеру для сканирования QR'),
                     ),
@@ -211,6 +322,8 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
                 ],
                 TextField(
                   controller: _codeCtrl,
+                  focusNode: _codeFocus,
+                  enabled: !_revokedLive,
                   decoration: const InputDecoration(
                     labelText: 'Полный код билета (EF1:...)',
                     hintText: 'Вставьте код или отсканируйте USB-сканером',
@@ -219,8 +332,9 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
                 ),
                 const SizedBox(height: EfSpacing.md),
                 FilledButton(
-                  onPressed:
-                      _inFlight ? null : () => _submitCheckIn(_codeCtrl.text),
+                  onPressed: (_inFlight || _revokedLive)
+                      ? null
+                      : () => _submitCheckIn(_codeCtrl.text),
                   child: _inFlight
                       ? const SizedBox(
                           height: 20,
@@ -254,7 +368,6 @@ class _ResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final df = DateFormat('d MMM, HH:mm:ss');
     final (String title, IconData icon, EfTone tone) = switch (result.status) {
       'ACCEPTED' => (
           'ВХОД РАЗРЕШЁН',
@@ -267,28 +380,30 @@ class _ResultCard extends StatelessWidget {
           EfTone.warning
         ),
       'WRONG_EVENT' => (
-          'ДРУГОЕ СОБЫТИЕ (WRONG_EVENT)',
+          'ДРУГОЕ СОБЫТИЕ',
           Icons.swap_horiz_rounded,
           EfTone.danger
         ),
-      'INVALID' => (
-          'НЕВЕРНЫЙ КОД (INVALID)',
-          Icons.error_outline_rounded,
-          EfTone.danger
-        ),
+      'INVALID' => ('НЕВЕРНЫЙ КОД', Icons.error_outline_rounded, EfTone.danger),
       'CLOSED' => (
-          'ОКНО ДОПУСКА ЗАКРЫТО (CLOSED)',
+          'ОКНО ДОПУСКА ЗАКРЫТО',
           Icons.schedule_rounded,
           EfTone.warning
         ),
-      'SOLD_OUT' => (
-          'МЕСТ НЕТ (SOLD_OUT)',
-          Icons.block_rounded,
-          EfTone.warning
-        ),
+      'SOLD_OUT' => ('МЕСТ НЕТ', Icons.block_rounded, EfTone.warning),
       'CANCELLED' => (
-          'ОТМЕНЁН (CANCELLED)',
+          'БИЛЕТ ИЛИ СОБЫТИЕ ОТМЕНЕНО',
           Icons.cancel_rounded,
+          EfTone.danger
+        ),
+      'FORBIDDEN' => (
+          'ДОСТУП ОТОЗВАН (403)',
+          Icons.gpp_bad_outlined,
+          EfTone.danger
+        ),
+      'CONFLICT' => (
+          'КОНФЛИКТ ЗАПРОСА (409)',
+          Icons.warning_rounded,
           EfTone.danger
         ),
       _ => ('РЕЗУЛЬТАТ УТОЧНЯЕТСЯ', Icons.sync_problem_rounded, EfTone.warning),
@@ -327,7 +442,7 @@ class _ResultCard extends StatelessWidget {
                   style: EfTextStyles.body(14, weight: FontWeight.w600)),
             if (result.usedAt != null)
               Text(
-                'Время первого входа (сервер): ${df.format(result.usedAt!.toLocal())}',
+                'Время первого входа (сервер): ${EfDateFmt.dateTimeSeconds(result.usedAt!)}',
                 style: EfTextStyles.mono(12, color: EfColors.mutedSlate),
               ),
             if (fatalError != null) ...[
@@ -336,7 +451,7 @@ class _ResultCard extends StatelessWidget {
                   style: EfTextStyles.body(12, color: EfColors.coral)),
             ],
             const SizedBox(height: EfSpacing.xl),
-            if (result.status == 'UNCERTAIN' && onRetrySameRequest != null) ...[
+            if (onRetrySameRequest != null) ...[
               FilledButton(
                 onPressed: onRetrySameRequest,
                 child: const Text('Повторить с тем же request_id'),
