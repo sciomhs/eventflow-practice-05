@@ -85,6 +85,11 @@ ThemeData buildEfTheme() {
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: EfColors.pureCard,
       indicatorColor: EfColors.emeraldTint,
+      iconTheme: WidgetStateProperty.resolveWith((states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? EfColors.emeraldDark
+                : EfColors.mutedSlate,
+          )),
       labelTextStyle: WidgetStateProperty.all(
         EfTextStyles.body(12, weight: FontWeight.w600),
       ),
