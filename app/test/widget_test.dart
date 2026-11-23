@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:intl/intl.dart';
 import 'package:eventflow_app/core/adaptive_shell.dart';
 import 'package:eventflow_app/core/auth_store.dart';
 import 'package:eventflow_app/design/theme.dart';
@@ -8,8 +10,10 @@ import 'package:eventflow_app/design/widgets/ef_widgets.dart';
 import 'package:eventflow_app/features/auth/auth_screen.dart';
 
 void main() {
-  setUpAll(() {
+  setUpAll(() async {
     GoogleFonts.config.allowRuntimeFetching = false;
+    await initializeDateFormatting('ru');
+    Intl.defaultLocale = 'ru';
   });
   testWidgets('AuthScreen renders without overflow at 360px and 1280px',
       (tester) async {

@@ -64,32 +64,92 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Future<void> _openServerDialog() async {
     final ctrl = TextEditingController(text: widget.auth.baseUrl);
+    String? healthStatus;
+    bool healthOk = false;
+    bool testing = false;
+
     final saved = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Адрес сервера', style: EfTextStyles.display(20)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Для Android-эмулятора используйте http://10.0.2.2:8000, для локальной сети — IP компьютера.',
-              style: EfTextStyles.body(13, color: EfColors.mutedSlate),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          title: Text('Адрес сервера', style: EfTextStyles.display(20)),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Для Web и десктопа используйте http://localhost:8085, для Android-эмулятора — http://10.0.2.2:8085, для локальной сети — IP компьютера.',
+                  style: EfTextStyles.body(13, color: EfColors.mutedSlate),
+                ),
+                const SizedBox(height: EfSpacing.md),
+                TextField(
+                  controller: ctrl,
+                  decoration: const InputDecoration(labelText: 'URL сервера'),
+                ),
+                const SizedBox(height: EfSpacing.md),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: testing
+                          ? null
+                          : () async {
+                              setDlgState(() {
+                                testing = true;
+                                healthStatus = null;
+                              });
+                              try {
+                                final res = await widget.auth.api
+                                    .checkHealth(ctrl.text);
+                                setDlgState(() {
+                                  testing = false;
+                                  healthOk = res['status'] == 'ok' &&
+                                      res['db'] == 'ok';
+                                  healthStatus =
+                                      'Сервер доступен (${res['latency_ms']} мс, БД: ${res['db']})';
+                                });
+                              } catch (e) {
+                                setDlgState(() {
+                                  testing = false;
+                                  healthOk = false;
+                                  healthStatus = 'Нет ответа: $e';
+                                });
+                              }
+                            },
+                      icon: const Icon(Icons.network_check_rounded, size: 18),
+                      label:
+                          Text(testing ? 'Проверка...' : 'Проверить (/health)'),
+                    ),
+                    const SizedBox(width: EfSpacing.sm),
+                    TextButton(
+                      onPressed: () => ctrl.text = widget.auth.defaultBaseUrl,
+                      child: const Text('Сбросить'),
+                    ),
+                  ],
+                ),
+                if (healthStatus != null) ...[
+                  const SizedBox(height: EfSpacing.sm),
+                  EfStatusPill(
+                    label: healthStatus!,
+                    icon: healthOk
+                        ? Icons.check_circle_outline
+                        : Icons.error_outline,
+                    tone: healthOk ? EfTone.positive : EfTone.danger,
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(height: EfSpacing.md),
-            TextField(
-              controller: ctrl,
-              decoration: const InputDecoration(labelText: 'URL сервера'),
-            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Отмена')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, ctrl.text),
+                child: const Text('Сохранить')),
           ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, ctrl.text),
-              child: const Text('Сохранить')),
-        ],
       ),
     );
     if (saved != null && saved.trim().isNotEmpty) {
@@ -99,7 +159,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final wide = MediaQuery.sizeOf(context).width >= 820;
+    final wide = MediaQuery.sizeOf(context).width >= 860;
 
     final formCard = Container(
       constraints: const BoxConstraints(maxWidth: 440),
@@ -126,7 +186,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Адрес сервера',
+                  tooltip: 'Настройка адреса сервера',
                   onPressed: _openServerDialog,
                   icon: const Icon(Icons.dns_outlined,
                       color: EfColors.mutedSlate),
@@ -134,9 +194,16 @@ class _AuthScreenState extends State<AuthScreen> {
               ],
             ),
             const SizedBox(height: EfSpacing.xs),
-            Text(
-              'Сервер: ${widget.auth.baseUrl}',
-              style: EfTextStyles.mono(11, color: EfColors.mutedSlate),
+            InkWell(
+              onTap: _openServerDialog,
+              borderRadius: BorderRadius.circular(EfRadii.sm),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Text(
+                  'Сервер: ${widget.auth.baseUrl}',
+                  style: EfTextStyles.mono(11, color: EfColors.mutedSlate),
+                ),
+              ),
             ),
             const SizedBox(height: EfSpacing.lg),
             if (_errorText != null) ...[
@@ -179,7 +246,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     )
                   : Text(_isRegister ? 'Создать аккаунт участника' : 'Войти'),
             ),
-            const SizedBox(height: EfSpacing.md),
+            const SizedBox(height: EfSpacing.sm),
             TextButton(
               onPressed: () => setState(() {
                 _isRegister = !_isRegister;
@@ -194,26 +261,49 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             ),
             const Divider(height: EfSpacing.xl, color: EfColors.hairlineBorder),
-            Text('Быстрый вход (dev-аккаунты):',
-                style: EfTextStyles.body(12, color: EfColors.mutedSlate)),
-            const SizedBox(height: EfSpacing.sm),
-            Wrap(
-              spacing: EfSpacing.sm,
-              runSpacing: EfSpacing.sm,
-              children: [
-                ActionChip(
-                    label: const Text('Участник 1'),
-                    onPressed: () => _fillDemo('participant1@eventflow.dev')),
-                ActionChip(
-                    label: const Text('Организатор'),
-                    onPressed: () => _fillDemo('organizer@eventflow.dev')),
-                ActionChip(
-                    label: const Text('Контролёр 1'),
-                    onPressed: () => _fillDemo('controller1@eventflow.dev')),
-                ActionChip(
-                    label: const Text('Контролёр 2'),
-                    onPressed: () => _fillDemo('controller2@eventflow.dev')),
-              ],
+            Material(
+              color: Colors.transparent,
+              child: Theme(
+                data: Theme.of(context)
+                    .copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(top: EfSpacing.xs),
+                  title: Text(
+                    'Демо-аккаунты для проверки',
+                    style: EfTextStyles.body(13,
+                        weight: FontWeight.w600, color: EfColors.mutedSlate),
+                  ),
+                  children: [
+                    Wrap(
+                      spacing: EfSpacing.sm,
+                      runSpacing: EfSpacing.sm,
+                      children: [
+                        ActionChip(
+                            label: const Text('Участник 1'),
+                            onPressed: () =>
+                                _fillDemo('participant1@eventflow.dev')),
+                        ActionChip(
+                            label: const Text('Участник 2'),
+                            onPressed: () =>
+                                _fillDemo('participant2@eventflow.dev')),
+                        ActionChip(
+                            label: const Text('Организатор'),
+                            onPressed: () =>
+                                _fillDemo('organizer@eventflow.dev')),
+                        ActionChip(
+                            label: const Text('Контролёр 1'),
+                            onPressed: () =>
+                                _fillDemo('controller1@eventflow.dev')),
+                        ActionChip(
+                            label: const Text('Контролёр 2'),
+                            onPressed: () =>
+                                _fillDemo('controller2@eventflow.dev')),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -227,7 +317,7 @@ class _AuthScreenState extends State<AuthScreen> {
             padding: const EdgeInsets.all(EfSpacing.lg),
             child: wide
                 ? ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 980),
+                    constraints: const BoxConstraints(maxWidth: 1020),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
@@ -270,7 +360,7 @@ class _BrandIntro extends StatelessWidget {
         const SizedBox(height: EfSpacing.lg),
         Text(
           'От регистрации\nдо одного честного входа',
-          style: EfTextStyles.display(compact ? 28 : 40),
+          style: EfTextStyles.display(compact ? 28 : 42),
           textAlign: compact ? TextAlign.center : TextAlign.left,
         ),
         const SizedBox(height: EfSpacing.md),
@@ -279,6 +369,29 @@ class _BrandIntro extends StatelessWidget {
           style: EfTextStyles.body(15, color: EfColors.mutedSlate),
           textAlign: compact ? TextAlign.center : TextAlign.left,
         ),
+        if (!compact) ...[
+          const SizedBox(height: EfSpacing.xl),
+          Container(
+            padding: const EdgeInsets.all(EfSpacing.lg),
+            decoration: BoxDecoration(
+              color: EfColors.warmStone,
+              borderRadius: BorderRadius.circular(EfRadii.lg),
+              border: Border.all(color: EfColors.hairlineBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Три роли в одном контуре',
+                    style: EfTextStyles.display(16)),
+                const SizedBox(height: EfSpacing.sm),
+                Text(
+                  'Участник получает QR-билет • Организатор следит за залом • Контролёр фиксирует единственный вход.',
+                  style: EfTextStyles.body(13, color: EfColors.mutedSlate),
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
     );
   }

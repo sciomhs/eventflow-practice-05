@@ -66,6 +66,20 @@ class ApiClient {
     return _decode(res);
   }
 
+  Future<Map<String, dynamic>> checkHealth(String targetUrl) async {
+    final clean = targetUrl.trim().endsWith('/')
+        ? targetUrl.trim().substring(0, targetUrl.trim().length - 1)
+        : targetUrl.trim();
+    final sw = Stopwatch()..start();
+    final res = await _client
+        .get(Uri.parse('$clean/health'))
+        .timeout(const Duration(seconds: 5));
+    sw.stop();
+    final data = _decode(res);
+    data['latency_ms'] = sw.elapsedMilliseconds;
+    return data;
+  }
+
   Map<String, dynamic> _decode(http.Response res) {
     final text = utf8.decode(res.bodyBytes);
     final decoded = text.isNotEmpty ? jsonDecode(text) : <String, dynamic>{};

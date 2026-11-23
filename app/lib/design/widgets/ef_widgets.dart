@@ -267,3 +267,183 @@ class EfConnectionBanner extends StatelessWidget {
     );
   }
 }
+
+class EfOfflineDataBanner extends StatelessWidget {
+  final VoidCallback? onRetry;
+  const EfOfflineDataBanner({super.key, this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: EfSpacing.md),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: EfColors.amberTint,
+        borderRadius: BorderRadius.circular(EfRadii.md),
+        border: Border.all(color: EfColors.amber.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off_rounded, size: 18, color: EfColors.amber),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Показаны сохранённые данные (офлайн). Регистрация, отмена и вход требуют связи с сервером.',
+              style: EfTextStyles.body(12, weight: FontWeight.w600),
+            ),
+          ),
+          if (onRetry != null)
+            TextButton(
+              onPressed: onRetry,
+              child: Text(
+                'Обновить',
+                style: EfTextStyles.body(12,
+                    weight: FontWeight.w700, color: EfColors.amber),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class EfCapacityBar extends StatelessWidget {
+  final int occupied;
+  final int capacity;
+
+  const EfCapacityBar({
+    super.key,
+    required this.occupied,
+    required this.capacity,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = capacity <= 0 ? 0.0 : (occupied / capacity).clamp(0.0, 1.0);
+    final fillColor = ratio >= 0.95
+        ? EfColors.coral
+        : (ratio >= 0.75 ? EfColors.amber : EfColors.emerald);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(EfRadii.pill),
+          child: LinearProgressIndicator(
+            value: ratio,
+            minHeight: 7,
+            backgroundColor: EfColors.warmStone,
+            valueColor: AlwaysStoppedAnimation<Color>(fillColor),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Занято $occupied из $capacity',
+              style: EfTextStyles.mono(11, color: EfColors.mutedSlate),
+            ),
+            Text(
+              '${(ratio * 100).round()}%',
+              style: EfTextStyles.mono(11,
+                  weight: FontWeight.w700, color: EfColors.deepInk),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class EfSkeletonCard extends StatefulWidget {
+  final double height;
+  const EfSkeletonCard({super.key, this.height = 148});
+
+  @override
+  State<EfSkeletonCard> createState() => _EfSkeletonCardState();
+}
+
+class _EfSkeletonCardState extends State<EfSkeletonCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        final shade = Color.lerp(
+            EfColors.warmStone, EfColors.pureCard, _ctrl.value * 0.65)!;
+        return Container(
+          height: widget.height,
+          margin: const EdgeInsets.only(bottom: EfSpacing.md),
+          padding: const EdgeInsets.all(EfSpacing.lg),
+          decoration: BoxDecoration(
+            color: EfColors.pureCard,
+            borderRadius: BorderRadius.circular(EfRadii.lg),
+            border: Border.all(color: EfColors.hairlineBorder),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(
+                      width: 92,
+                      height: 22,
+                      decoration: BoxDecoration(
+                          color: shade,
+                          borderRadius: BorderRadius.circular(EfRadii.pill))),
+                  Container(
+                      width: 110,
+                      height: 22,
+                      decoration: BoxDecoration(
+                          color: shade,
+                          borderRadius: BorderRadius.circular(EfRadii.pill))),
+                ],
+              ),
+              const SizedBox(height: EfSpacing.md),
+              Container(
+                  width: 220,
+                  height: 20,
+                  decoration: BoxDecoration(
+                      color: shade,
+                      borderRadius: BorderRadius.circular(EfRadii.sm))),
+              const SizedBox(height: EfSpacing.sm),
+              Container(
+                  width: double.infinity,
+                  height: 14,
+                  decoration: BoxDecoration(
+                      color: shade,
+                      borderRadius: BorderRadius.circular(EfRadii.sm))),
+              const Spacer(),
+              Container(
+                  width: double.infinity,
+                  height: 8,
+                  decoration: BoxDecoration(
+                      color: shade,
+                      borderRadius: BorderRadius.circular(EfRadii.pill))),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

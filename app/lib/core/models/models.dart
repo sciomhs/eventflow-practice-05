@@ -215,6 +215,18 @@ class CheckInResult {
       );
 }
 
+class TimelineBucket {
+  final DateTime bucket;
+  final int count;
+
+  const TimelineBucket({required this.bucket, required this.count});
+
+  factory TimelineBucket.fromJson(Map<String, dynamic> json) => TimelineBucket(
+        bucket: DateTime.parse(json['bucket'] as String),
+        count: (json['count'] as num).toInt(),
+      );
+}
+
 class OrganizerStats {
   final String eventId;
   final String status;
@@ -226,6 +238,7 @@ class OrganizerStats {
   final int scansTotal;
   final int last24hEntries;
   final List<TicketTypeItem> byType;
+  final List<TimelineBucket> timeline;
 
   const OrganizerStats({
     required this.eventId,
@@ -238,6 +251,7 @@ class OrganizerStats {
     required this.scansTotal,
     required this.last24hEntries,
     required this.byType,
+    this.timeline = const [],
   });
 
   factory OrganizerStats.fromJson(Map<String, dynamic> json) => OrganizerStats(
@@ -253,5 +267,9 @@ class OrganizerStats {
         byType: (json['by_type'] as List<dynamic>)
             .map((e) => TicketTypeItem.fromJson(e as Map<String, dynamic>))
             .toList(),
+        timeline: (json['timeline'] as List<dynamic>?)
+                ?.map((e) => TimelineBucket.fromJson(e as Map<String, dynamic>))
+                .toList() ??
+            const [],
       );
 }

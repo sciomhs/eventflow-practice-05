@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/auth_store.dart';
+import '../../core/date_fmt.dart';
+import '../../core/labels.dart';
 import '../../core/models/models.dart';
+import '../../core/sse_client.dart';
 import '../../design/tokens.dart';
 import '../../design/widgets/ef_widgets.dart';
 
@@ -30,32 +34,59 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   String? _selectedTypeId;
   String? _pendingRequestId;
 
+  StreamSubscription<SseMessage>? _sseSub;
+  StreamSubscription<void>? _reconnSub;
+
+  bool get _isParticipant => widget.auth.user?.role == 'participant';
+
   @override
   void initState() {
     super.initState();
     _load();
+    _sseSub = widget.auth.sse.messages.listen((msg) {
+      if (msg.event == 'ticket.issued' ||
+          msg.event == 'ticket.cancelled' ||
+          msg.event == 'event.updated' ||
+          msg.event == 'event.cancelled' ||
+          msg.event == 'entry.accepted') {
+        _load(silent: true);
+      }
+    });
+    _reconnSub =
+        widget.auth.sse.onReconnected.listen((_) => _load(silent: true));
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  @override
+  void dispose() {
+    _sseSub?.cancel();
+    _reconnSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final evJson =
           await widget.auth.api.get('/api/v1/events/${widget.eventId}');
       final ev = EventItem.fromJson(evJson);
 
       TicketItem? activeTicket;
-      final myRes = await widget.auth.api.get('/api/v1/tickets/my');
-      final myList = (myRes['items'] as List<dynamic>)
-          .map((e) => TicketItem.fromJson(e as Map<String, dynamic>))
-          .toList();
-      for (final t in myList) {
-        if (t.eventId == widget.eventId &&
-            (t.status == 'ISSUED' || t.status == 'USED')) {
-          activeTicket = t;
-          break;
+      if (_isParticipant) {
+        final myRes = await widget.auth.api.get('/api/v1/tickets/my');
+        final myList = (myRes['items'] as List<dynamic>)
+            .map((e) => TicketItem.fromJson(e as Map<String, dynamic>))
+            .toList();
+        for (final t in myList) {
+          if (t.eventId == widget.eventId &&
+              (t.status == 'ISSUED' || t.status == 'USED')) {
+            activeTicket = t;
+            break;
+          }
         }
       }
 
@@ -63,8 +94,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         setState(() {
           _event = ev;
           _myActiveTicket = activeTicket;
-          _selectedTypeId ??=
-              ev.ticketTypes.isNotEmpty ? ev.ticketTypes.first.id : null;
+          final available =
+              ev.ticketTypes.where((t) => t.remaining > 0).toList();
+          if (_selectedTypeId == null ||
+              !ev.ticketTypes.any((t) => t.id == _selectedTypeId)) {
+            _selectedTypeId = available.isNotEmpty
+                ? available.first.id
+                : (ev.ticketTypes.isNotEmpty ? ev.ticketTypes.first.id : null);
+          }
           _loading = false;
         });
       }
@@ -107,7 +144,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
             ),
           ),
         );
-        await _load();
+        await _load(silent: true);
       } else {
         final msg = switch (outcome) {
           'SOLD_OUT' => 'Места в выбранной категории закончились (SOLD_OUT).',
@@ -116,7 +153,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           _ => 'Регистрация отклонена: $outcome',
         };
         setState(() => _error = msg);
-        await _load();
+        await _load(silent: true);
       }
     } catch (e) {
       if (mounted) {
@@ -128,18 +165,65 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     }
   }
 
+  Future<void> _cancelActiveTicket() async {
+    final ticket = _myActiveTicket;
+    if (ticket == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Отменить регистрацию?', style: EfTextStyles.display(20)),
+        content: Text(
+          'Билет ${ticket.code} станет недействительным, а место вернётся в общий пул.',
+          style: EfTextStyles.body(14),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Оставить')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: EfColors.coral),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Отменить билет'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await widget.auth.api.post('/api/v1/tickets/${ticket.id}/cancel');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Билет ${ticket.code} отменён.')),
+        );
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final df = DateFormat('d MMMM yyyy, HH:mm');
-
     return Scaffold(
       appBar: AppBar(title: const Text('Событие')),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Padding(
+              padding: EdgeInsets.all(EfSpacing.lg),
+              child: Column(
+                children: [
+                  EfSkeletonCard(height: 180),
+                  EfSkeletonCard(height: 180)
+                ],
+              ),
+            )
           : _event == null
-              ? EfErrorBanner(
-                  message: _error ?? 'Не удалось загрузить событие',
-                  onRetry: _load)
+              ? Padding(
+                  padding: const EdgeInsets.all(EfSpacing.lg),
+                  child: EfErrorBanner(
+                    message: _error ?? 'Не удалось загрузить событие',
+                    onRetry: _load,
+                  ),
+                )
               : SingleChildScrollView(
                   padding: const EdgeInsets.all(EfSpacing.lg),
                   child: Center(
@@ -148,16 +232,31 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          EfStatusPill(
-                            label: '${_event!.category} • ${_event!.city}',
-                            icon: Icons.place_outlined,
-                            tone: EfTone.neutral,
+                          Wrap(
+                            spacing: EfSpacing.sm,
+                            runSpacing: EfSpacing.sm,
+                            children: [
+                              EfStatusPill(
+                                label: '${_event!.category} • ${_event!.city}',
+                                icon: Icons.place_outlined,
+                                tone: EfTone.neutral,
+                              ),
+                              EfStatusPill(
+                                label: EfLabels.eventStatus(_event!.status),
+                                icon: _event!.status == 'PUBLISHED'
+                                    ? Icons.check_circle_outline
+                                    : Icons.cancel_outlined,
+                                tone: _event!.status == 'PUBLISHED'
+                                    ? EfTone.positive
+                                    : EfTone.danger,
+                              ),
+                            ],
                           ),
                           const SizedBox(height: EfSpacing.md),
                           Text(_event!.title, style: EfTextStyles.display(28)),
                           const SizedBox(height: EfSpacing.sm),
                           Text(
-                            '${df.format(_event!.startsAt.toLocal())} (${_event!.timezone}) • ${_event!.location}',
+                            '${EfDateFmt.fullDateTime(_event!.startsAt, timezone: _event!.timezone)} • ${_event!.location}',
                             style: EfTextStyles.body(14,
                                 color: EfColors.mutedSlate),
                           ),
@@ -169,6 +268,12 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                                   color: EfColors.mutedSlate),
                             ),
                           ],
+                          const SizedBox(height: EfSpacing.lg),
+                          EfCapacityBar(
+                            occupied: (_event!.capacity - _event!.freeSeats)
+                                .clamp(0, _event!.capacity),
+                            capacity: _event!.capacity,
+                          ),
                           const SizedBox(height: EfSpacing.lg),
                           Text(_event!.description,
                               style: EfTextStyles.body(15)),
@@ -189,10 +294,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                                       Text('Ваш билет',
                                           style: EfTextStyles.display(20)),
                                       EfStatusPill(
-                                        label:
-                                            _myActiveTicket!.status == 'ISSUED'
-                                                ? 'ДЕЙСТВИТЕЛЕН'
-                                                : 'ИСПОЛЬЗОВАН',
+                                        label: EfLabels.ticketStatus(
+                                            _myActiveTicket!.status),
                                         icon:
                                             _myActiveTicket!.status == 'ISSUED'
                                                 ? Icons.check_circle_outline
@@ -231,11 +334,48 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                                       ),
                                     ),
                                     const SizedBox(height: EfSpacing.md),
-                                    SelectableText(
-                                      _myActiveTicket!.qrToken!,
-                                      style: EfTextStyles.mono(12,
-                                          color: EfColors.mutedSlate),
-                                      textAlign: TextAlign.center,
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Flexible(
+                                          child: SelectableText(
+                                            _myActiveTicket!.qrToken!,
+                                            style: EfTextStyles.mono(12,
+                                                color: EfColors.mutedSlate),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Скопировать код',
+                                          icon: const Icon(Icons.copy_rounded,
+                                              size: 18),
+                                          onPressed: () {
+                                            Clipboard.setData(ClipboardData(
+                                                text:
+                                                    _myActiveTicket!.qrToken!));
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(const SnackBar(
+                                                    content: Text(
+                                                        'Полный код скопирован')));
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: EfSpacing.md),
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: OutlinedButton.icon(
+                                        onPressed: _cancelActiveTicket,
+                                        icon: const Icon(Icons.close_rounded,
+                                            color: EfColors.coral),
+                                        label: Text(
+                                          'Отменить регистрацию',
+                                          style: EfTextStyles.body(14,
+                                              weight: FontWeight.w600,
+                                              color: EfColors.coral),
+                                        ),
+                                      ),
                                     ),
                                   ] else
                                     Text(
@@ -252,13 +392,15 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                             const SizedBox(height: EfSpacing.md),
                             ..._event!.ticketTypes.map((tt) {
                               final selected = _selectedTypeId == tt.id;
+                              final canSelect =
+                                  _isParticipant && tt.remaining > 0;
                               return Padding(
                                 padding:
                                     const EdgeInsets.only(bottom: EfSpacing.sm),
                                 child: RadioListTile<String>(
                                   value: tt.id,
                                   groupValue: _selectedTypeId,
-                                  onChanged: tt.remaining > 0
+                                  onChanged: canSelect
                                       ? (v) =>
                                           setState(() => _selectedTypeId = v)
                                       : null,
@@ -288,23 +430,38 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                               );
                             }),
                             const SizedBox(height: EfSpacing.lg),
-                            FilledButton(
-                              onPressed: (_event!.status == 'PUBLISHED' &&
-                                      !_submitting &&
-                                      _selectedTypeId != null)
-                                  ? _register
-                                  : null,
-                              child: _submitting
-                                  ? const SizedBox(
-                                      height: 20,
-                                      width: 20,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: EfColors.pureCard),
-                                    )
-                                  : const Text(
-                                      'Зарегистрироваться и получить QR'),
-                            ),
+                            if (_isParticipant)
+                              FilledButton(
+                                onPressed: (_event!.status == 'PUBLISHED' &&
+                                        !_submitting &&
+                                        _selectedTypeId != null)
+                                    ? _register
+                                    : null,
+                                child: _submitting
+                                    ? const SizedBox(
+                                        height: 20,
+                                        width: 20,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: EfColors.pureCard),
+                                      )
+                                    : const Text(
+                                        'Зарегистрироваться и получить QR'),
+                              )
+                            else
+                              Container(
+                                padding: const EdgeInsets.all(EfSpacing.md),
+                                decoration: BoxDecoration(
+                                  color: EfColors.warmStone,
+                                  borderRadius:
+                                      BorderRadius.circular(EfRadii.md),
+                                ),
+                                child: Text(
+                                  'Режим просмотра (${EfLabels.role(widget.auth.user?.role ?? '')}). Регистрация билетов доступна только участникам.',
+                                  style: EfTextStyles.body(13,
+                                      color: EfColors.mutedSlate),
+                                ),
+                              ),
                           ],
                         ],
                       ),

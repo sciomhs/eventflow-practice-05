@@ -63,6 +63,12 @@ class _EventFlowAppState extends State<EventFlowApp> {
                     selectedIcon: Icons.dashboard_rounded,
                     page: OrganizerDashboardScreen(auth: _auth),
                   ),
+                  EfNavDestination(
+                    label: 'Каталог',
+                    icon: Icons.explore_outlined,
+                    selectedIcon: Icons.explore_rounded,
+                    page: ParticipantCatalogScreen(auth: _auth),
+                  ),
                 ],
               ),
             'controller' => EfAdaptiveShell(
@@ -80,6 +86,12 @@ class _EventFlowAppState extends State<EventFlowApp> {
                     icon: Icons.history_outlined,
                     selectedIcon: Icons.history_rounded,
                     page: ControllerJournalScreen(auth: _auth),
+                  ),
+                  EfNavDestination(
+                    label: 'Каталог',
+                    icon: Icons.explore_outlined,
+                    selectedIcon: Icons.explore_rounded,
+                    page: ParticipantCatalogScreen(auth: _auth),
                   ),
                 ],
               ),

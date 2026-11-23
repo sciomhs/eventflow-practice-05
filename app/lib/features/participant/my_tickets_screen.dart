@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../core/auth_store.dart';
+import '../../core/date_fmt.dart';
+import '../../core/labels.dart';
 import '../../core/models/models.dart';
 import '../../core/sse_client.dart';
 import '../../design/tokens.dart';
@@ -18,7 +19,9 @@ class MyTicketsScreen extends StatefulWidget {
 }
 
 class _MyTicketsScreenState extends State<MyTicketsScreen> {
+  static const _cacheKey = 'my_tickets';
   bool _loading = true;
+  bool _fromCache = false;
   String? _error;
   List<TicketItem> _tickets = [];
   StreamSubscription<SseMessage>? _sseSub;
@@ -55,17 +58,30 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
     }
     try {
       final res = await widget.auth.api.get('/api/v1/tickets/my');
+      await widget.auth.saveCache(_cacheKey, res);
       final list = (res['items'] as List<dynamic>)
           .map((e) => TicketItem.fromJson(e as Map<String, dynamic>))
           .toList();
       if (mounted) {
         setState(() {
           _tickets = list;
+          _fromCache = false;
           _loading = false;
         });
       }
     } catch (e) {
-      if (mounted) {
+      final cached = await widget.auth.loadCache(_cacheKey);
+      if (cached != null && mounted) {
+        final list = (cached['items'] as List<dynamic>)
+            .map((item) => TicketItem.fromJson(item as Map<String, dynamic>))
+            .toList();
+        setState(() {
+          _tickets = list;
+          _fromCache = true;
+          _error = null;
+          _loading = false;
+        });
+      } else if (mounted) {
         setState(() {
           _error = e.toString();
           _loading = false;
@@ -115,7 +131,6 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final df = DateFormat('d MMM, HH:mm');
     final active = _tickets.where((t) => t.status == 'ISSUED').toList();
     final history = _tickets.where((t) => t.status != 'ISSUED').toList();
 
@@ -126,14 +141,17 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
         children: [
           Text('Мои билеты', style: EfTextStyles.display(28)),
           const SizedBox(height: EfSpacing.lg),
+          if (_fromCache) EfOfflineDataBanner(onRetry: _load),
           if (_error != null) ...[
             EfErrorBanner(message: _error!, onRetry: _load),
             const SizedBox(height: EfSpacing.lg),
           ],
           if (_loading)
-            const Padding(
-              padding: EdgeInsets.all(EfSpacing.xxl),
-              child: Center(child: CircularProgressIndicator()),
+            const Column(
+              children: [
+                EfSkeletonCard(height: 220),
+                EfSkeletonCard(height: 140)
+              ],
             )
           else if (_tickets.isEmpty)
             const EfEmptyState(
@@ -159,8 +177,8 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
                                 child: Text(t.eventTitle ?? '',
                                     style: EfTextStyles.display(20)),
                               ),
-                              const EfStatusPill(
-                                label: 'ДЕЙСТВИТЕЛЕН',
+                              EfStatusPill(
+                                label: EfLabels.ticketStatus(t.status),
                                 icon: Icons.check_circle_outline,
                                 tone: EfTone.positive,
                               ),
@@ -174,7 +192,7 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
                           ),
                           if (t.eventStartsAt != null)
                             Text(
-                              '${df.format(t.eventStartsAt!.toLocal())} (${t.eventTimezone ?? ''}) • ${t.eventLocation ?? ''}',
+                              '${EfDateFmt.shortDateTime(t.eventStartsAt!, timezone: t.eventTimezone)} • ${t.eventLocation ?? ''}',
                               style: EfTextStyles.body(13,
                                   color: EfColors.mutedSlate),
                             ),
@@ -219,11 +237,14 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
-                              onPressed: () => _cancelTicket(t),
+                              onPressed:
+                                  _fromCache ? null : () => _cancelTicket(t),
                               icon: const Icon(Icons.close_rounded,
                                   color: EfColors.coral),
                               label: Text(
-                                'Отменить регистрацию',
+                                _fromCache
+                                    ? 'Отмена недоступна офлайн'
+                                    : 'Отменить регистрацию',
                                 style: EfTextStyles.body(14,
                                     weight: FontWeight.w600,
                                     color: EfColors.coral),
@@ -248,12 +269,12 @@ class _MyTicketsScreenState extends State<MyTicketsScreen> {
                         style: EfTextStyles.body(15, weight: FontWeight.w600)),
                     subtitle: Text(
                       used && t.usedAt != null
-                          ? 'Вход зафиксирован: ${df.format(t.usedAt!.toLocal())}'
-                          : 'Отменён',
+                          ? 'Вход зафиксирован: ${EfDateFmt.shortDateTime(t.usedAt!, timezone: t.eventTimezone)}'
+                          : EfLabels.ticketStatus(t.status),
                       style: EfTextStyles.body(13, color: EfColors.mutedSlate),
                     ),
                     trailing: EfStatusPill(
-                      label: used ? 'ИСПОЛЬЗОВАН' : 'ОТМЕНЁН',
+                      label: EfLabels.ticketStatus(t.status),
                       icon: used
                           ? Icons.verified_outlined
                           : Icons.cancel_outlined,

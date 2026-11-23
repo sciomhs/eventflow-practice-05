@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import '../../core/auth_store.dart';
+import '../../core/date_fmt.dart';
+import '../../core/labels.dart';
 import '../../core/models/models.dart';
 import '../../core/sse_client.dart';
 import '../../design/tokens.dart';
@@ -19,6 +20,7 @@ class ParticipantCatalogScreen extends StatefulWidget {
 
 class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
   final _searchCtrl = TextEditingController();
+  Timer? _debounce;
   String _status = 'PUBLISHED';
   String _category = '';
   String _city = '';
@@ -28,6 +30,7 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
   static const int _pageSize = 10;
 
   bool _loading = true;
+  bool _fromCache = false;
   String? _error;
   List<EventItem> _items = [];
   int _total = 0;
@@ -53,10 +56,20 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _sseSub?.cancel();
     _reconnSub?.cancel();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String _) {
+    setState(() {}); // Refresh clear icon visibility immediately
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 250), () {
+      _page = 1;
+      _load();
+    });
   }
 
   Future<void> _load({bool silent = false}) async {
@@ -66,6 +79,7 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
         _error = null;
       });
     }
+    const cacheKey = 'catalog_latest';
     try {
       final query = <String, String>{
         'status': _status,
@@ -73,8 +87,9 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
         'page': '$_page',
         'page_size': '$_pageSize',
       };
-      if (_searchCtrl.text.trim().isNotEmpty)
+      if (_searchCtrl.text.trim().isNotEmpty) {
         query['search'] = _searchCtrl.text.trim();
+      }
       if (_category.isNotEmpty) query['category'] = _category;
       if (_city.isNotEmpty) query['city'] = _city;
       final now = DateTime.now().toUtc();
@@ -88,6 +103,13 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
       }
 
       final res = await widget.auth.api.get('/api/v1/events', query: query);
+      if (_page == 1 &&
+          _searchCtrl.text.trim().isEmpty &&
+          _category.isEmpty &&
+          _city.isEmpty &&
+          _status == 'PUBLISHED') {
+        await widget.auth.saveCache(cacheKey, res);
+      }
       final list = (res['items'] as List<dynamic>)
           .map((e) => EventItem.fromJson(e as Map<String, dynamic>))
           .toList();
@@ -95,11 +117,24 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
         setState(() {
           _items = list;
           _total = (res['total'] as num).toInt();
+          _fromCache = false;
           _loading = false;
         });
       }
     } catch (e) {
-      if (mounted) {
+      final cached = await widget.auth.loadCache(cacheKey);
+      if (cached != null && mounted) {
+        final list = (cached['items'] as List<dynamic>)
+            .map((item) => EventItem.fromJson(item as Map<String, dynamic>))
+            .toList();
+        setState(() {
+          _items = list;
+          _total = (cached['total'] as num?)?.toInt() ?? list.length;
+          _fromCache = true;
+          _error = null;
+          _loading = false;
+        });
+      } else if (mounted) {
         setState(() {
           _error = e.toString();
           _loading = false;
@@ -125,7 +160,7 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
             style: EfTextStyles.body(14, color: EfColors.mutedSlate),
           ),
           const SizedBox(height: EfSpacing.lg),
-          // 6 filters
+          if (_fromCache) EfOfflineDataBanner(onRetry: _load),
           Wrap(
             spacing: EfSpacing.md,
             runSpacing: EfSpacing.md,
@@ -140,8 +175,10 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
                     prefixIcon: const Icon(Icons.search),
                     suffixIcon: _searchCtrl.text.isNotEmpty
                         ? IconButton(
+                            tooltip: 'Очистить поиск',
                             icon: const Icon(Icons.clear),
                             onPressed: () {
+                              _debounce?.cancel();
                               _searchCtrl.clear();
                               _page = 1;
                               _load();
@@ -149,7 +186,9 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
                           )
                         : null,
                   ),
+                  onChanged: _onSearchChanged,
                   onSubmitted: (_) {
+                    _debounce?.cancel();
                     _page = 1;
                     _load();
                   },
@@ -159,8 +198,8 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
                 label: 'Статус',
                 value: _status,
                 items: const {
-                  'PUBLISHED': 'Опубликованные',
-                  'CANCELLED': 'Отменённые'
+                  'PUBLISHED': 'Опубликовано',
+                  'CANCELLED': 'Отменено'
                 },
                 onChanged: (v) {
                   _status = v;
@@ -172,7 +211,7 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
                 label: 'Категория',
                 value: _category,
                 items: const {
-                  '': 'Все',
+                  '': 'Все категории',
                   'Технологии': 'Технологии',
                   'Дизайн': 'Дизайн',
                   'Хакатон': 'Хакатон'
@@ -234,9 +273,8 @@ class _ParticipantCatalogScreenState extends State<ParticipantCatalogScreen> {
             const SizedBox(height: EfSpacing.lg),
           ],
           if (_loading)
-            const Padding(
-              padding: EdgeInsets.all(EfSpacing.xxl),
-              child: Center(child: CircularProgressIndicator()),
+            const Column(
+              children: [EfSkeletonCard(), EfSkeletonCard(), EfSkeletonCard()],
             )
           else if (_items.isEmpty)
             EfEmptyState(
@@ -381,8 +419,9 @@ class _EventCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final df = DateFormat('d MMM, HH:mm');
     final isCancelled = event.status == 'CANCELLED';
+    final occupied =
+        (event.capacity - event.freeSeats).clamp(0, event.capacity);
 
     return Card(
       child: Padding(
@@ -399,8 +438,9 @@ class _EventCard extends StatelessWidget {
                   tone: EfTone.neutral,
                 ),
                 EfStatusPill(
-                  label:
-                      isCancelled ? 'Отменено' : 'Свободно: ${event.freeSeats}',
+                  label: isCancelled
+                      ? EfLabels.eventStatus(event.status)
+                      : 'Свободно: ${event.freeSeats}',
                   icon: isCancelled
                       ? Icons.cancel_outlined
                       : Icons.event_seat_outlined,
@@ -413,25 +453,62 @@ class _EventCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: EfSpacing.md),
-            Text(event.title, style: EfTextStyles.display(20)),
-            const SizedBox(height: EfSpacing.xs),
-            Text(
-              '${df.format(event.startsAt.toLocal())} (${event.timezone}) • ${event.city}, ${event.location}',
-              style: EfTextStyles.body(13, color: EfColors.mutedSlate),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 52,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  decoration: BoxDecoration(
+                    color: EfColors.warmStone,
+                    borderRadius: BorderRadius.circular(EfRadii.md),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        EfDateFmt.dayBadge(event.startsAt),
+                        style: EfTextStyles.mono(18, weight: FontWeight.w700),
+                      ),
+                      Text(
+                        EfDateFmt.monthBadge(event.startsAt),
+                        style:
+                            EfTextStyles.mono(10, color: EfColors.mutedSlate),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: EfSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(event.title, style: EfTextStyles.display(20)),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${EfDateFmt.shortDateTime(event.startsAt, timezone: event.timezone)} • ${event.city}, ${event.location}',
+                        style:
+                            EfTextStyles.body(13, color: EfColors.mutedSlate),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: EfSpacing.sm),
+            const SizedBox(height: EfSpacing.md),
             Text(
               event.description,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: EfTextStyles.body(14),
             ),
-            const SizedBox(height: EfSpacing.lg),
+            const SizedBox(height: EfSpacing.md),
+            EfCapacityBar(occupied: occupied, capacity: event.capacity),
+            const SizedBox(height: EfSpacing.md),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton(
                 onPressed: onOpen,
-                child: const Text('Подробнее и регистрация'),
+                child: const Text('Подробнее'),
               ),
             ),
           ],

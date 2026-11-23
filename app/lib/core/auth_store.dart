@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
@@ -21,12 +22,35 @@ class AuthStore extends ChangeNotifier {
   String? get error => _error;
   String get baseUrl => api.baseUrl;
 
+  String get defaultBaseUrl =>
+      (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+          ? 'http://10.0.2.2:8085'
+          : 'http://localhost:8085';
+
   AuthStore() {
-    final defaultUrl =
-        (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
-            ? 'http://10.0.2.2:8085'
-            : 'http://localhost:8085';
-    api = ApiClient(baseUrl: defaultUrl);
+    api = ApiClient(baseUrl: defaultBaseUrl);
+  }
+
+  Future<void> saveCache(String key, Map<String, dynamic> data) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'ef_cache_${api.baseUrl}_${_user?.id ?? 'anon'}_$key',
+        jsonEncode(data),
+      );
+    } catch (_) {}
+  }
+
+  Future<Map<String, dynamic>?> loadCache(String key) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs
+          .getString('ef_cache_${api.baseUrl}_${_user?.id ?? 'anon'}_$key');
+      if (raw == null || raw.isEmpty) return null;
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> init() async {
