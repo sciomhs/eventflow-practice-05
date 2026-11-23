@@ -24,8 +24,8 @@ class AuthStore extends ChangeNotifier {
   AuthStore() {
     final defaultUrl =
         (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
-            ? 'http://10.0.2.2:8000'
-            : 'http://localhost:8000';
+            ? 'http://10.0.2.2:8085'
+            : 'http://localhost:8085';
     api = ApiClient(baseUrl: defaultUrl);
   }
 
