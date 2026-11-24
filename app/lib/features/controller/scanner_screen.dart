@@ -284,7 +284,7 @@ class _ControllerScannerScreenState extends State<ControllerScannerScreen> {
                       child: SizedBox(
                         height: 280,
                         child: MobileScanner(
-                          errorBuilder: (context, error) {
+                          errorBuilder: (context, error, _) {
                             return Container(
                               color: EfColors.warmStone,
                               padding: const EdgeInsets.all(EfSpacing.lg),
